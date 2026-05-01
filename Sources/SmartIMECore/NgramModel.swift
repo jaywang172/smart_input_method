@@ -49,27 +49,31 @@ public class NgramModel {
         }
         
         // 訓練 bigram
-        for i in 0..<(words.count - 1) {
-            let w1 = words[i]
-            let w2 = words[i + 1]
-            
-            if bigramCounts[w1] == nil {
-                bigramCounts[w1] = [:]
+        if words.count >= 2 {
+            for i in 0..<(words.count - 1) {
+                let w1 = words[i]
+                let w2 = words[i + 1]
+                
+                if bigramCounts[w1] == nil {
+                    bigramCounts[w1] = [:]
+                }
+                bigramCounts[w1]![w2, default: 0] += 1
             }
-            bigramCounts[w1]![w2, default: 0] += 1
         }
         
         // 訓練 trigram
-        for i in 0..<(words.count - 2) {
-            let w1 = words[i]
-            let w2 = words[i + 1]
-            let w3 = words[i + 2]
-            let key = "\(w1) \(w2)"
-            
-            if trigramCounts[key] == nil {
-                trigramCounts[key] = [:]
+        if words.count >= 3 {
+            for i in 0..<(words.count - 2) {
+                let w1 = words[i]
+                let w2 = words[i + 1]
+                let w3 = words[i + 2]
+                let key = "\(w1) \(w2)"
+                
+                if trigramCounts[key] == nil {
+                    trigramCounts[key] = [:]
+                }
+                trigramCounts[key]![w3, default: 0] += 1
             }
-            trigramCounts[key]![w3, default: 0] += 1
         }
     }
     /// 計算 KN 統計（基於 bigramCounts）
@@ -102,7 +106,7 @@ public class NgramModel {
     /// 計算 bigram 機率（log 域，Kneser-Ney 平滑）
     /// P_KN(w2|w1) = max(c(w1,w2)-D,0)/c(w1) + λ(w1) * P_cont(w2)
     /// P_cont(w2) = N1+(·,w2) / N1+(·,·)
-    func bigramLogProbability(_ word1: String, _ word2: String) -> Double {
+    public func bigramLogProbability(_ word1: String, _ word2: String) -> Double {
         guard let foll = bigramCounts[word1] else {
             // 無前項資訊時，退回到 continuation 機率
             let cont = Double(bigramContinuationCounts[word2] ?? 0)
@@ -126,7 +130,7 @@ public class NgramModel {
     }
     
     /// 計算 trigram 機率（log 域，絕對折扣平滑 + 回退到 bigram）
-    func trigramLogProbability(_ word1: String, _ word2: String, _ word3: String) -> Double {
+    public func trigramLogProbability(_ word1: String, _ word2: String, _ word3: String) -> Double {
         let key = "\(word1) \(word2)"
         guard let trigrams = trigramCounts[key] else {
             return bigramLogProbability(word2, word3)
@@ -143,7 +147,7 @@ public class NgramModel {
     }
     
     /// 計算句子 log 機率（使用 bigram 回退）
-    func sentenceLogProbability(_ words: [String]) -> Double {
+    public func sentenceLogProbability(_ words: [String]) -> Double {
         guard !words.isEmpty else { return -Double.infinity }
         var logProb: Double = unigramLogProbability(words[0])
         for i in 1..<words.count {
@@ -159,7 +163,7 @@ public class NgramModel {
     ///   - context: 上下文詞（最多兩個）
     ///   - candidates: 候選詞列表
     /// - Returns: 排序後的候選詞及其機率
-    func predictNext(context: [String], candidates: [String]) -> [(word: String, probability: Double)] {
+    public func predictNext(context: [String], candidates: [String]) -> [(word: String, probability: Double)] {
         var results: [(String, Double)] = []
         results.reserveCapacity(candidates.count)
         for candidate in candidates {
@@ -179,11 +183,28 @@ public class NgramModel {
     }
     
     /// 獲取最常見的 N 個詞
-    func topWords(n: Int) -> [(word: String, count: Int)] {
+    public func topWords(n: Int) -> [(word: String, count: Int)] {
         let sorted = unigramCounts.sorted { $0.value > $1.value }
         return Array(sorted.prefix(n)).map { ($0.key, $0.value) }
     }
     
+    // MARK: - Linear-Domain Convenience API
+
+    /// 計算 unigram 機率（線性域）
+    public func unigramProbability(_ word: String) -> Double {
+        return exp(unigramLogProbability(word))
+    }
+
+    /// 計算 bigram 機率（線性域）
+    public func bigramProbability(_ word1: String, _ word2: String) -> Double {
+        return exp(bigramLogProbability(word1, word2))
+    }
+
+    /// 計算句子機率（線性域）
+    public func sentenceProbability(_ words: [String]) -> Double {
+        return exp(sentenceLogProbability(words))
+    }
+
     // MARK: - Persistence
     
     /// 保存模型到檔案

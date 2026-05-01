@@ -88,9 +88,9 @@ SmartIME/
 
 ## 技術需求
 
-- macOS 12.0+
-- Xcode 14.0+
-- Swift 5.7+
+- Swift 5.9+
+- macOS 12.0+ / Xcode 14.0+（`SmartIMEApp` 輸入法目標）
+- Windows 10/11 + Swift Toolchain（`SmartIMECore` / `SmartIMEDemo`）
 
 ## 安裝與使用
 
@@ -116,6 +116,16 @@ let engine = InputEngine(config: InputEngineConfig(
     ]
 ))
 ```
+
+### Windows 快速驗證（核心引擎）
+
+```bash
+swift build
+swift run SmartIMECoreTests
+swift run SmartIMEDemo
+```
+
+> 註：`SmartIMEApp`（InputMethodKit）為 macOS 專用目標，Windows 上不會建置該目標。
 
 ### 釋出說明（MVP 0.1.0 摘要）
 

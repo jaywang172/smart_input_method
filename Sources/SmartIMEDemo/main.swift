@@ -24,6 +24,30 @@ func main() {
     let prob = exp(ngram.unigramLogProbability("hello"))
     print("N-gram 機率: \(prob)")
 
+    // 測試 InputEngine（擴充版詞典）
+    print("\n4. 測試 InputEngine 擴充詞典...")
+    let engine = InputEngine()
+
+    // 中文候選
+    let zhCandidates = engine.handleInput("你好")
+    print("中文「你好」候選: \(zhCandidates.map { $0.text })")
+
+    // 英文補全
+    engine.clearInput()
+    let enCandidates = engine.handleInput("hel")
+    print("英文「hel」候選: \(enCandidates.map { $0.text })")
+
+    // 注音轉換
+    engine.clearInput()
+    let bpmfCandidates = engine.handleInput("ㄋㄧˇㄏㄠˇ")
+    print("注音候選: \(bpmfCandidates.map { $0.text })")
+
+    // 測試 IMEDemo
+    print("\n5. 運行 IMEDemo...")
+    let demo = IMEDemo()
+    demo.runInteractiveDemo()
+    demo.testDataStructurePerformance()
+
     print("✅ 演示完成！")
 }
 

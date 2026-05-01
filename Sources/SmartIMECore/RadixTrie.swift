@@ -57,7 +57,7 @@ public final class RadixTrie: WordLookup {
         prefixCache.removeAll()
     }
 
-    func insertBatch(_ words: [(String, Int)]) {
+    public func insertBatch(_ words: [(String, Int)]) {
         for (w, f) in words { insert(w, frequency: f) }
     }
 
@@ -65,11 +65,11 @@ public final class RadixTrie: WordLookup {
         return findNode(word)?.isEndOfWord ?? false
     }
 
-    func startsWith(_ prefix: String) -> Bool {
+    public func startsWith(_ prefix: String) -> Bool {
         return findNode(prefix) != nil
     }
 
-    func getAllWordsWithPrefix(_ prefix: String, limit: Int = 10) -> [(word: String, frequency: Int)] {
+    public func getAllWordsWithPrefix(_ prefix: String, limit: Int = 10) -> [(word: String, frequency: Int)] {
         if let cached = prefixCache.get(prefix) { return Array(cached.prefix(limit)) }
         guard let (node, consumed) = findNodeWithConsumed(prefix) else { return [] }
         var results: [(String, Int)] = []
@@ -80,9 +80,9 @@ public final class RadixTrie: WordLookup {
         return sliced
     }
 
-    var count: Int { wordCount }
+    public var count: Int { wordCount }
 
-    func clear() {
+    public func clear() {
         root.children.removeAll()
         wordCount = 0
         prefixCache.removeAll()
@@ -100,9 +100,15 @@ public final class RadixTrie: WordLookup {
             if let (edge, child) = current.children.first(where: { key.hasPrefixCommon(with: $0.key) }) {
                 let lcp = key.longestCommonPrefix(with: edge)
                 if lcp.count == edge.count {
+                    // 完全匹配這段 edge，繼續往下
                     key.removeFirst(lcp.count)
                     consumed += lcp.count
                     current = child
+                } else if lcp.count == key.count {
+                    // key 在 edge 中間就用完了（例如 key="prog", edge="program"）
+                    // 對於前綴搜尋，child 的所有子孫都是有效匹配
+                    consumed += lcp.count
+                    return (child, consumed)
                 } else {
                     return nil
                 }

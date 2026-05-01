@@ -22,6 +22,7 @@ final class ThreadSafeSnapshot<T> {
     }
     
     /// 寫入（獨占鎖）
+    @discardableResult
     func write<U>(_ block: (inout T) -> U) -> U {
         pthread_rwlock_wrlock(&rwlock)
         defer { pthread_rwlock_unlock(&rwlock) }

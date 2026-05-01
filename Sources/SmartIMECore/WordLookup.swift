@@ -1,7 +1,7 @@
 import Foundation
 
 /// 統一詞查詢介面，便於以壓縮 Trie 替換
-protocol WordLookup {
+public protocol WordLookup {
     func insert(_ word: String, frequency: Int)
     func insertBatch(_ words: [(String, Int)])
     func search(_ word: String) -> Bool

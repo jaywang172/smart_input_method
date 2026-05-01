@@ -1,0 +1,562 @@
+ MIME-win 技術文檔（完整拆解 + macOS/Swift 版移植規格草案）
+
+   文件目的：把 MIME-win（Windows 版外殼） 與其依賴的
+  Multilingual-IME（核心引擎） 從「架構 / 資料流 / 演算法 /
+   資料資產 / 可移植面」全部拆開說清楚，讓你接下來在 macOS 用
+  Swift（InputMethodKit）重做時，有一份可直接照著實作的規格。
+
+  ---------------------------------------------------------------------------
+
+  0. 範圍與結論（先講最重要的）
+
+  0.1 這個 repo（MIME-win）本身是什麼？
+
+   - MIME-win 幾乎不是核心 IME，而是：
+
+    1. Windows/PIME(TextService) 的 事件轉接器（key event → 引擎 token）
+
+    2. UI 回填器（引擎狀態 → composition / candidates / commit）
+
+    3. 一個「很侵入式」的安裝腳本（改寫 PIME 的 Python runtime 路徑）
+
+   真正的輸入法邏輯在 multilingual_ime.KeyEventHandler（PyPI 套件 / 另一個
+   repo：Zen-Transform/Multilingual-IME）。
+
+  0.2 你做 macOS/Swift 版時，最需要移植的是什麼？
+
+   - 你要重做的核心通常是：
+    - KeyEventHandler 的狀態機（composition / selection / commit）
+    - token 分割（多 IME tokenizer + A* SentenceGraph）
+    - 由 token 產生候選（SQLite fuzzy 查詢 + ranking）
+    - 片語匹配（phrase DB）
+    - 使用者頻率 DB（user_frequency.db）
+   - 最難完全對齊的點：原版用 PyTorch .pth 模型做 token
+  validity（token_detector.predict()）。
+    - 要「完全一致」：需要把模型轉成 CoreML 或重做等價推論
+    - 要「先做出可用版本」：可以用 SQLite DB existence /
+  最小距離閾值替代（行為會有差，但工程難度大幅下降）
+
+  ---------------------------------------------------------------------------
+
+  1) 專案（MIME-win）檔案與職責
+
+  1.1 Repo 結構（重點檔案）
+
+   - README.md：安裝說明（Windows + Python
+    3.13 + PIME）
+   - ime.json：PIME 註冊用的 IME 描述檔（module/service/config tool）
+   - mime_win.py：唯一 runtime 主程式（TextService 子類）
+   - install/install.py：安裝腳本（clone + venv + pip + patch PIME python）
+   - install/fake-p.py + dist/fake-p.exe：用 PyInstaller 打包的「假
+  python.exe」
+   - install/modify-server/server.py：用來替換 PIME server
+  的腳本（注意：目前內容看起來有自我呼叫風險，見 §4.3）
+   - icons/config.ico：語言列按鈕 icon
+   - requirements.txt：pip 依賴清單（UTF-16 LE 編碼）
+
+  1.2 ime.json（PIME 端如何載入）
+
+  關鍵欄位：
+
+   - moduleName: "mime_win" → PIME import mime_win.py
+   - serviceName: "MIMETextService" → PIME 找 class MIMETextService
+   - configTool/configToolParams: "config_tool.py config"
+    - 但 repo 內沒有 config_tool.py：目前設定工具等於未完成
+
+  ---------------------------------------------------------------------------
+
+  2) Windows Runtime：mime_win.py 完整資料流
+
+  2.1 依賴與環境假設
+
+  mime_win.py 依賴：
+
+   - textService.TextService、keycodes.VK_*：來自 PIME 的 runtime（不在此
+  repo）
+   - multilingual_ime.KeyEventHandler：來自 PyPI / Multilingual-IME
+   - LOCALAPPDATA：Windows 使用者資料夾環境變數（用來放 log/config）
+
+   這代表：mime_win.py 不是一個可獨立執行的 Python 腳本，它必須在 PIME
+  的輸入法 host 裡被載入。
+
+  2.2 啟動時做什麼？
+
+   1. 建立 log 檔：
+
+   - %LOCALAPPDATA%\\PIME\\MIME_win\\MIME_win.log（RotatingFileHandler，1MB，1
+   份備份）
+
+   1. 建立/載入設定檔：
+
+   - %LOCALAPPDATA%\\PIME\\MIME_win\\MIME_win_config.json
+   - 若不存在，寫入 multilingual_ime.multi_config.DEFAULT_CONFIG（實際上是
+  MultiConfig 的預設 dict）
+
+   1. 建立引擎：
+
+   - KeyEventHandler(verbose_mode=True)
+
+  2.3 核心事件流（KeyDown）
+
+  總覽：
+
+   PIME/TSF keyDown
+     -> MIMETextService.onKeyDown()
+        -> convertKeyEvent() 轉成 token(string)
+        -> KeyEventHandler.handle_key(token)
+        -> KeyEventHandler.slow_handle()
+        -> updateUI()（composition/candidates/commit）
+
+  2.3.1 convertKeyEvent()：Windows VK → 引擎 token
+
+   - 轉換規則（摘要）：
+    - Enter → "enter"
+    - 方向鍵 → "left" "right" "up" "down"
+    - Backspace → "backspace"
+    - Delete → "delete"
+    - Esc → "esc"
+    - Space → " "
+    - 其他：用 chr(charCode) 得到字元
+    - Ctrl + 字元：在字元前加上 © 前綴（例：Ctrl+[ → "©["）
+    - Shift + 字元：轉大寫（upper()）
+
+   © 是核心引擎用來表達「控制鍵組合」的內部表示法（用於注音特殊符號等，見
+  §3.4）。
+
+  2.3.2 onKeyDown()：決定是否攔截
+
+   - 若 KeyEventHandler.handle_key(...) 回 True：代表引擎吃掉此鍵 → 更新 UI →
+  return True
+   - 否則 return False → 交給 OS（或 host）處理
+
+  2.4 UI 回填：updateUI()
+
+  引擎狀態分兩種：
+
+   1. 選字模式（in_selection_mode = True）
+
+   - setShowCandidates(True)
+   - setCandidateList(handler.candidate_word_list)（只是一頁）
+   - setCandidateCursor(handler.selection_index)（頁內游標）
+
+   1. 非選字模式
+
+   - 若 handler.commit_string 非空：setCommitString(commit_string)（送出）
+   - setShowCandidates(False)
+   - setCandidateList(handler.candidate_word_list)（通常可空/或保留）
+   - setCompositionString(handler.composition_string)（marked/preedit）
+   - setCompositionCursor(...)：把「token index」換算成「字串 index」
+    - composition_index = len("".join(total_composition_words[:tokenIndex]))
+
+  ---------------------------------------------------------------------------
+
+  3) 核心引擎（Multilingual-IME）完整拆解（你 Swift 版要對齊的規格）
+
+
+  來源：Zen-Transform/Multilingual-IME（multilingual_ime/key_event_handler.py,
+
+   ime.py, sentence_graph.py, keystroke_map_db.py, phrase_db.py,
+   multi_config.py 等）
+
+  3.1 核心類：KeyEventHandler（狀態機 + 候選生成器）
+
+  你可以把它視為平台無關的「IME Engine」。
+
+  3.1.1 對 UI 最重要的輸出介面（你 Swift 版也應提供）
+
+   - composition_string: String：目前 marked text
+   - composition_index: Int：游標所在 token 位置（不是字元）
+   - candidate_word_list: [String]：當頁候選
+   - selection_index: Int：當頁候選游標
+   - commit_string: String：若非空，表示應 commit 到 client
+   - in_selection_mode: Bool
+   - activated_imes: [String]：目前啟用的 IME 種類
+
+  3.1.2 核心內部狀態（建議 Swift 端同概念）
+
+   - unfreeze_keystrokes: String：尚未固定的 raw keystrokes（含 ©）
+   - _freezed_candidate_sentence: [Candidate]
+   - _unfreeze_candidate_sentence: [Candidate]
+   - _freezed_index: Int：游標/凍結分界
+   - selection states：
+    - in_selection_mode
+    - _total_candidate_list: [Candidate]
+    - _total_selection_index: Int（跨頁索引）
+
+   「freeze/unfreeze」是讓游標移動、選字、刪除能在
+  token/字的層級上運作的關鍵設計。
+
+  ---------------------------------------------------------------------------
+
+  3.2 Key handling 契約（最重要的行為規格）
+
+  handle_key(key: String) -> Bool
+
+   - 若 key 是「一般可輸入鍵」：加入 unfreeze_keystrokes → return True
+   - 若目前有 composition 且 key 是功能鍵：編輯/選字/提交 → return True
+   - 否則 return False（讓 OS 處理）
+
+  功能鍵行為（非 selection mode）
+
+   - enter：
+    - commit_string = composition_string
+    - _unfreeze_to_freeze()（把 unfreeze 合併進 freeze）
+    - （可選）更新 phrase/frequency DB（目前 phrase learn 未實作）
+    - reset 所有狀態
+   - left/right：
+    - 先 _unfreeze_to_freeze()
+    - 移動 _freezed_index（游標在 token 間移動）
+   - down：嘗試進入 selection mode（針對游標前一個 token）
+   - esc：reset composition + selection
+   - backspace/delete：刪除 freeze/unfreeze 內容（含 © 的特殊處理）
+
+  功能鍵行為（selection mode）
+
+   - up/down：改變 _total_selection_index
+   - enter：把選到的 Candidate 覆蓋回 composition 中該 token，並離開 selection
+   mode
+   - esc：離開 selection mode
+
+   注意：核心碼的 FUNCTIONAL_KEYS 列表與外殼傳入字串（esc vs
+  escape）看起來可能有版本差異；Swift 版建議統一 token
+   命名並在 adapter 層做映射（見 §6.3）。
+
+  ---------------------------------------------------------------------------
+
+  3.3 slow_handle()：把 raw keystrokes 轉成候選句子
+
+  每次有輸入，外殼會呼叫：
+
+   1. token_sentences = _separate_tokens(unfreeze_keystrokes)
+   2. _unfreeze_candidate_sentence =
+  _token_sentence_to_candidate_sentence(token_sentences)
+
+  也就是：
+
+   - 第一步：分 token（切詞）
+   - 第二步：每個 token 轉 candidates，再做片語匹配，選出最終候選序列
+
+  ---------------------------------------------------------------------------
+
+  3.4 多 IME tokenization + © 控制字元機制
+
+  核心會把「同一串 keystrokes」丟給多個 IME 的 tokenizer 產生多種切法，例如：
+
+   - 英文：以空白/非單字字元切
+   - 注音：用 regex 對聲韻調（含空白/特定符號）切
+   - 拼音：DP/遞迴切分（用 intact_pinyin_set）
+   - 倉頡：目前用簡單 regex（TODO：DP）
+   - 日文：用 intact_japanese_set 做最長匹配拆分
+
+  另外還會做一件事：
+
+   - separate_by_control_characters(keystroke, control_char="©")
+    - 把 "©[" 這種視為一個 token
+    - 這讓「Ctrl+某鍵」可以表達特殊符號（尤其在注音）
+
+  ---------------------------------------------------------------------------
+
+  3.5 句子最優切法：SentenceGraph（A*）
+
+  _separate_tokens() 會收集所有 IME tokenizer 的切法，建立一張圖：
+
+   - 每個 token 有一個 cost：token 距離最近可用詞的距離
+   - 用 A* 找到總 cost 最小的 path → 視為「最合理的 token 切法」
+
+  get_token_distance(token)：
+
+   - 對每個 activated IME：
+    - 若 ime.is_valid_token(token) 不通過 → skip
+    - 否則 distance = ime.closest_word_distance(token)（來自 SQLite fuzzy）
+   - 回傳各 IME 最小 distance
+
+   這裡的 is_valid_token() 在原版大量依賴 DL model（.pth），這是 Swift
+  移植的最大分歧點（見 §6.4）。
+
+  ---------------------------------------------------------------------------
+
+  3.6 token → candidates：SQLite fuzzy + ranking + user frequency boosting
+
+  token_to_candidates(token)：
+
+   1. 對每個 activated IME：
+    - 若 token valid：從該 IME 的 *_keystroke_map.db 撈 closest words
+   2. 若完全沒 candidates：
+    - fallback：把 token 當英文 Candidate（原樣輸出）
+   3. ranking：
+    - 先依 distance 升冪
+    - 只保留 distance == smallest_distance 的候選
+    - 再依詞頻 word_frequency 降冪
+    - 再用 user_frequency.db 把常用字提升（額外排序）
+
+  ---------------------------------------------------------------------------
+
+  3.7 片語匹配（chinese_phrase.db / user_phrase.db）
+
+  _token_sentence_to_candidate_sentence() 預設走
+  solve_sentence_phrase_matching：
+
+   - 對句首 token 的候選字，去 phrase DB 找以該字為首的片語
+   - 最長片語優先（greedy）
+   - 若片語每一字都出現在對應位置 token 的候選集合，就選用該片語候選序列
+   - 否則退回使用當前 token 的 top-1 candidate
+
+  ---------------------------------------------------------------------------
+
+  3.8 資料庫資產（Swift 版必須要能讀）
+
+  核心依賴的檔案類型：
+
+   - SQLite DB（查詢速度與結果品質的根基）
+    - bopomofo_keystroke_map.db
+    - cangjie_keystroke_map.db
+    - pinyin_keystroke_map.db
+    - english_keystroke_map.db
+    - japanese_keystroke_map.db
+    - chinese_phrase.db
+    - user_phrase.db（可寫）
+    - user_frequency.db（可寫）
+   - PyTorch model .pth（token detector）
+    - one_hot_dl_token_model_{ime}_{date}.pth
+
+  ---------------------------------------------------------------------------
+
+  4) 安裝機制（MIME-win）為何侵入式、做了什麼、風險在哪
+
+  4.1 安裝流程摘要（install/install.py）
+
+   1. 確認 Python >=
+    3.13（強制）
+   2. clone MIME-win 到：
+    - C:\\Program Files (x86)\\PIME\\python\\input_methods\\MIME_win
+   3. 建 venv：
+    - ...\\MIME_win\\venv
+   4. pip install -r requirements.txt（包含 torch 等大依賴）
+   5. 改寫 PIME 的 python3 runtime
+    - PIME\\python\\python3 → 移到 old_python3
+    - 新建 PIME\\python\\python3\\python.exe（其實是 fake-p.exe）
+   6. 註冊 DLL：
+    - Regsvr32 PIMETextService.dll
+   7. 要求重開機
+
+  4.2 fake-p.exe 的設計目的
+
+   - PIME 可能綁死去呼叫某個 python3\\python.exe
+   - 但你要用 Python
+    3.13 + 64-bit + torch
+   - 所以用一個「假 python.exe」把執行導到你的 venv python
+
+  4.3 已知不一致/潛在問題（建議在文件中先標注）
+
+   - requirements.txt 是 UTF-16 LE，pip 是否必然能吃取決於環境（需實測）
+   - ime.json 指到 config_tool.py，但 repo 未提供
+   - install/modify-server/server.py 內容看起來會呼叫
+  PIME\\python\\server.py，若它本身被 copy 成 server.py
+  可能造成自我呼叫（需確認 PIME 原本 server.py 的位置/名稱與實際啟動方式）
+
+   這些都不影響你做 mac 版（因為 mac 不會用
+  PIME），但它們是「完整分析」必須誠實記載的工程風險點。
+
+  ---------------------------------------------------------------------------
+
+  5) macOS / Swift 版輸入法：目標架構與對照表（可直接當規格）
+
+  5.1 macOS 技術選型（前端框架）
+
+   - 使用 InputMethodKit
+    - IMKInputController：主控制器，處理 key event
+    - setMarkedText(...)：顯示 composition（preedit）
+    - insertText(...)：commit 到 client
+    - 候選 UI：可用 IMKCandidates 或自訂候選視窗（NSWindow/NSPopover）
+
+  5.2 你要重做的模組切分（建議）
+
+  目標：把「平台相關 UI」跟「平台無關引擎」硬切開。
+
+   [MIMEMacHost]  (InputMethodKit)
+     - NSEvent -> token
+     - marked text / cursor
+     - candidates window
+     - preferences UI / menu
+
+   [MIMEEngine]   (Swift, platform-agnostic)
+     - KeyEventHandler port
+     - tokenization + SentenceGraph
+     - candidate generation + ranking
+     - phrase matching
+     - user db updates
+     - config model
+
+   [MIMEData]     (Swift)
+     - SQLite access layer
+     - packaged db assets
+     - user db path management
+
+  5.3 Engine 對外介面（Swift 建議型態）
+
+  你可以把 Python KeyEventHandler 的對外能力縮成這個：
+
+   struct EngineState {
+       var composition: String
+       var compositionTokenIndex: Int      // token index
+       var candidates: [String]            // current page
+       var candidateCursor: Int            // within page
+       var inSelectionMode: Bool
+       var commitText: String?             // non-nil means "commit now"
+   }
+
+   protocol MIMEEngine {
+       func handleKey(_ token: String) -> Bool   // True = handled
+       func slowHandle()                         // optional (or internal)
+       func getState() -> EngineState
+       func setIMEEnabled(_ ime: IMEType, enabled: Bool)
+   }
+
+   你 mac 前端只需要做到：事件 token 化、呼叫 engine、把 state 畫出來。
+
+  5.4 關鍵：macOS Key Event → token 的映射規格
+
+  你需要實作與 convertKeyEvent() 同等語意：
+
+   - 功能鍵 token（建議統一命名，避免 Python 的 esc/escape 混亂）：
+    - Return/Enter → "enter"
+    - Esc → "esc"（或 "escape"，但要一致）
+    - ← → "left", → → "right", ↑ → "up", ↓ → "down"
+    - Backspace(deleteBackward) → "backspace"
+    - Forward Delete(deleteForward) → "delete"
+    - Space → " "
+   - 一般字元：
+    - 用 event.characters（或 charactersIgnoringModifiers 視你策略）
+    - Shift：讓字元本身呈現大小寫（通常系統已處理好）
+   - Control 組合：
+    - 依需求決定是否保留 © 機制（要與核心 DB/特殊符號對齊就要保留）
+    - 例：Ctrl + [ → "©["
+
+   macOS 上 Control/Option/Command 很多會被系統/app shortcut
+  吃掉；你可能需要定義一套「你的 IME
+   內部特殊符號觸發鍵」並確保不與常見快捷衝突。
+
+  5.5 UI 對照：Windows(PIME) API vs macOS(InputMethodKit)
+
+  ┌─────────────────────────┬──────────────────────────────────┬──────────────
+  ─────────────────┐
+  │ 功能                    │ Windows 外殼（PIME TextService） │
+  macOS（InputMethodKit）       │
+  ├─────────────────────────┼──────────────────────────────────┼──────────────
+  ─────────────────┤
+  │ 顯示 composition        │ setCompositionString()           │
+  setMarkedText()               │
+  ├─────────────────────────┼──────────────────────────────────┼──────────────
+  ─────────────────┤
+  │ 移動 composition cursor │ setCompositionCursor()           │ marked range
+  / selectedRange  │
+  ├─────────────────────────┼──────────────────────────────────┼──────────────
+  ─────────────────┤
+  │ commit text             │ setCommitString()                │ insertText()
+                   │
+  ├─────────────────────────┼──────────────────────────────────┼──────────────
+  ─────────────────┤
+  │ 顯示候選                │ setShowCandidates(true)          │ IMKCandidates
+   / 自訂候選窗    │
+  ├─────────────────────────┼──────────────────────────────────┼──────────────
+  ─────────────────┤
+  │ 候選列表                │ setCandidateList(list)           │
+  updateCandidates(...)（自訂） │
+  ├─────────────────────────┼──────────────────────────────────┼──────────────
+  ─────────────────┤
+  │ 候選游標                │ setCandidateCursor(i)            │
+  selectCandidate(at:)（自訂）  │
+  └─────────────────────────┴──────────────────────────────────┴──────────────
+  ─────────────────┘
+
+  ---------------------------------------------------------------------------
+
+  6) Swift 移植策略（兩條路：完全一致 vs 可用優先）
+
+  6.1 路線 A：完全一致（成本高、品質最高）
+
+   - 把 multilingual_ime 的全部行為重做：
+    - tokenization（含 pinyin DP / japanese longest match）
+    - SentenceGraph A*
+    - SQLite fuzzy + ranking + phrase matching
+    - user_frequency 更新
+   - 把 .pth token detector 轉成 CoreML：
+    - PyTorch → ONNX → CoreML（或 torchscript → coremltools）
+    - 需要你拿到模型輸入格式（通常是 one-hot/embedding）與前處理一致性
+   - 優點：行為最接近 Windows 版
+   - 缺點：模型移植最不穩定、耗時
+
+  6.2 路線 B：可用優先（先做出 mac 版再逐步逼近）
+
+   - 先不要移植 DL token detector
+   - 改用 DB-based validity：
+    - 例如：isValidToken(token) = closestWordDistance(token) <= threshold
+    - 或：token 是否在某個 IME 的 mapping DB 有 direct match / fuzzy match
+   - 先完成：
+    - composition/selection/commit 狀態機
+    - SQLite 查詢與 ranking
+    - 候選視窗與選字流程
+   - 優點：最能快速落地
+   - 缺點：token 切法與候選品質可能與原版不同（但通常仍可用）
+
+  ---------------------------------------------------------------------------
+
+  7) 配置與持久化（mac 版建議做法）
+
+  Windows 版：
+
+   - config json：%LOCALAPPDATA%\\PIME\\MIME_win\\MIME_win_config.json
+   - user db：由 multilingual_ime 內部指定路徑（src 旁）
+
+  mac 版建議：
+
+   - config：UserDefaults（或 ~/Library/Preferences/...plist）
+   - user db：
+    - ~/Library/Application Support/<BundleID>/user_frequency.db
+    - ~/Library/Application Support/<BundleID>/user_phrase.db
+   - packaged read-only db：
+    - 放在 IME bundle resource（App.app/Contents/Resources/...）
+    - 或第一次啟動複製到 Application Support（如果 SQLite 查詢需要可寫 temp
+  index 等）
+
+  ---------------------------------------------------------------------------
+
+  8) 測試與除錯建議（mac 版非常重要）
+
+   - 先做一個純 CLI/UnitTest harness（不靠 InputMethodKit）：
+    - 給 token 序列 → 驗 composition_string / candidate list / commit
+    - 把 Python 引擎的結果當 gold baseline（如果你還能跑 Python 版）
+   - UI 端測試：
+    - TextEdit / Notes / Safari input 欄位
+    - 特別測：Esc、方向鍵、Backspace、選字模式上下鍵、Enter commit
+   - Log：
+    - mac 端建議用 os_log + 同步寫檔（類似 Windows 的 RotatingFile）
+
+  ---------------------------------------------------------------------------
+
+  9) 附錄：重要名詞對照
+
+   - keystroke：使用者打的鍵（引擎的原始輸入字串）
+   - token：切分後的單位（用來查詢候選）
+   - Candidate：某 token 的候選字/詞（含距離、頻率、IME 類型）
+   - composition(preedit/marked text)：尚未 commit 的文字
+   - commit：送進 app 的確定文字
+   - selection mode：候選選字狀態（候選窗顯示 + 游標）
+
+  ---------------------------------------------------------------------------
+
+  10) 你接下來切到資料夾開始寫時，我建議的第一步（不動演算法先把骨架立住）
+
+   1. 建立 macOS Input Method target（InputMethodKit）
+   2. 先做 Engine stub（只回傳 composition = raw input，候選空）
+   3. 完成：
+    - key event mapping（NSEvent → token）
+    - marked text / commit 管線
+    - 基本候選窗可顯示與上下移動
+   4. 再把 engine 逐步替換成「KeyEventHandler 等價狀態機」
+
+  ---------------------------------------------------------------------------
+
+  如果你下一步要我「直接在新資料夾建立 macOS/Swift InputMethodKit 專案骨架 +
+  Engine 介面 + 最小可跑的
+  marked/commit/candidate 流程」，你切過去後跟我說目標資料夾名稱即可。ㄓ翁星

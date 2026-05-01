@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# 智能混合輸入法 - 建置腳本
+# 智能混合輸入法 - 建置與安裝腳本
+# 使用 Swift Package Manager 建置
 
 set -e
 
@@ -9,247 +10,281 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# 打印帶顏色的訊息
-print_info() {
-    echo -e "${BLUE}ℹ ${1}${NC}"
-}
+print_info()    { echo -e "${BLUE}ℹ  ${1}${NC}"; }
+print_success() { echo -e "${GREEN}✓  ${1}${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠  ${1}${NC}"; }
+print_error()   { echo -e "${RED}✗  ${1}${NC}"; }
 
-print_success() {
-    echo -e "${GREEN}✓ ${1}${NC}"
-}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_NAME="SmartIME"
+BUNDLE_ID="com.jaywang.inputmethod.SmartIME"
+APP_BUNDLE="${APP_NAME}.app"
+INSTALL_DIR="$HOME/Library/Input Methods"
 
-print_warning() {
-    echo -e "${YELLOW}⚠ ${1}${NC}"
-}
-
-print_error() {
-    echo -e "${RED}✗ ${1}${NC}"
-}
-
+# ═══════════════════════════════════════════════
 # 顯示標題
-echo "════════════════════════════════════════════════════════════"
-echo "       智能混合輸入法 - 建置與測試工具"
-echo "════════════════════════════════════════════════════════════"
-echo ""
-
-# 檢查 Swift 是否安裝
-if ! command -v swift &> /dev/null; then
-    print_error "Swift 未安裝！請先安裝 Xcode Command Line Tools"
-    exit 1
-fi
-
-print_success "Swift 版本: $(swift --version | head -n 1)"
-echo ""
-
-# 顯示選單
-show_menu() {
-    echo "請選擇操作："
+# ═══════════════════════════════════════════════
+show_banner() {
     echo ""
-    echo "  1) 運行主程式 (顯示專案資訊)"
-    echo "  2) 查看專案統計"
-    echo "  3) 查看檔案結構"
-    echo "  4) 查看文檔列表"
-    echo "  5) 檢查程式碼語法"
-    echo "  6) 清理輸出檔案"
-    echo "  7) 建立 Xcode 專案 (說明)"
-    echo "  8) 顯示快速參考"
-    echo "  0) 退出"
+    echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║       SmartIME 智能混合輸入法 建置工具       ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -n "輸入選項 [0-8]: "
 }
 
-# 統計程式碼
-count_code() {
-    print_info "統計程式碼行數..."
-    echo ""
-    
-    echo "Swift 檔案："
-    for file in Core/*.swift DataStructures/*.swift ML/*.swift Tests/*.swift main.swift; do
-        if [ -f "$file" ]; then
-            lines=$(wc -l < "$file")
-            printf "  %-40s %6d 行\n" "$file" "$lines"
-        fi
-    done
-    
-    echo ""
-    echo "文檔檔案："
-    for file in *.md; do
-        if [ -f "$file" ]; then
-            lines=$(wc -l < "$file")
-            printf "  %-40s %6d 行\n" "$file" "$lines"
-        fi
-    done
-    
-    echo ""
-    total_swift=$(find . -name "*.swift" -exec wc -l {} + | tail -1 | awk '{print $1}')
-    total_md=$(find . -name "*.md" -exec wc -l {} + | tail -1 | awk '{print $1}')
-    
-    print_success "Swift 總行數: $total_swift"
-    print_success "文檔總行數: $total_md"
-    print_success "專案總行數: $((total_swift + total_md))"
-}
-
-# 顯示檔案結構
-show_structure() {
-    print_info "專案檔案結構："
-    echo ""
-    
-    if command -v tree &> /dev/null; then
-        tree -L 2 -I 'Resources'
-    else
-        find . -type f \( -name "*.swift" -o -name "*.md" \) -not -path "*/.*" | sort
+# ═══════════════════════════════════════════════
+# 檢查環境
+# ═══════════════════════════════════════════════
+check_env() {
+    if ! command -v swift &> /dev/null; then
+        print_error "Swift 未安裝！請先安裝 Xcode Command Line Tools"
+        echo "  → xcode-select --install"
+        exit 1
     fi
+    print_success "Swift: $(swift --version 2>&1 | head -n 1)"
 }
 
-# 顯示文檔
-show_docs() {
-    print_info "文檔列表："
-    echo ""
-    
-    echo "📚 主要文檔："
-    echo "  1. README.md           - 專案概述"
-    echo "  2. ARCHITECTURE.md     - 架構設計"
-    echo "  3. ALGORITHMS.md       - 演算法詳解"
-    echo "  4. USAGE_GUIDE.md      - 使用指南"
-    echo "  5. PROJECT_STRUCTURE.md - 專案結構"
-    echo "  6. QUICK_REFERENCE.md  - 快速參考"
-    echo "  7. SUMMARY.md          - 專案總結"
-    echo ""
-    
-    echo "要查看某個文檔嗎？輸入文檔編號 (1-7) 或按 Enter 跳過："
-    read -r choice
-    
-    case $choice in
-        1) less README.md ;;
-        2) less ARCHITECTURE.md ;;
-        3) less ALGORITHMS.md ;;
-        4) less USAGE_GUIDE.md ;;
-        5) less PROJECT_STRUCTURE.md ;;
-        6) less QUICK_REFERENCE.md ;;
-        7) less SUMMARY.md ;;
-        *) ;;
-    esac
+# ═══════════════════════════════════════════════
+# 建置核心引擎
+# ═══════════════════════════════════════════════
+build_core() {
+    print_info "建置 SmartIMECore..."
+    cd "$SCRIPT_DIR"
+    swift build --product SmartIMECore 2>&1
+    print_success "SmartIMECore 建置完成"
 }
 
-# 語法檢查
-check_syntax() {
-    print_info "檢查 Swift 檔案語法..."
-    echo ""
+# ═══════════════════════════════════════════════
+# 建置輸入法 App
+# ═══════════════════════════════════════════════
+build_app() {
+    print_info "建置 SmartIMEApp..."
+    cd "$SCRIPT_DIR"
+    swift build --product SmartIMEApp 2>&1
+    print_success "SmartIMEApp 建置完成"
+}
+
+# ═══════════════════════════════════════════════
+# 執行測試
+# ═══════════════════════════════════════════════
+run_tests() {
+    print_info "執行單元測試..."
+    cd "$SCRIPT_DIR"
+    swift run SmartIMECoreTests 2>&1
+    print_success "測試完成"
+}
+
+# ═══════════════════════════════════════════════
+# 執行示範
+# ═══════════════════════════════════════════════
+run_demo() {
+    print_info "執行示範程式..."
+    cd "$SCRIPT_DIR"
+    swift run SmartIMEDemo 2>&1
+}
+
+# ═══════════════════════════════════════════════
+# 建立 .app bundle
+# ═══════════════════════════════════════════════
+package_app() {
+    print_info "建立 ${APP_BUNDLE}..."
+    cd "$SCRIPT_DIR"
     
-    error_count=0
+    # 先建置 release
+    swift build --product SmartIMEApp -c release 2>&1
     
-    for file in Core/*.swift DataStructures/*.swift ML/*.swift; do
-        if [ -f "$file" ]; then
-            echo -n "檢查 $file ... "
-            if swift -frontend -parse "$file" &> /dev/null; then
-                print_success "通過"
-            else
-                print_error "發現語法錯誤"
-                ((error_count++))
-            fi
-        fi
-    done
+    # 找到編譯產出
+    local BUILD_DIR
+    BUILD_DIR=$(swift build --product SmartIMEApp -c release --show-bin-path 2>/dev/null)
+    local EXECUTABLE="${BUILD_DIR}/SmartIMEApp"
     
-    echo ""
-    if [ $error_count -eq 0 ]; then
-        print_success "所有檔案語法正確！"
-    else
-        print_warning "發現 $error_count 個檔案有語法錯誤"
+    if [ ! -f "$EXECUTABLE" ]; then
+        print_error "找不到編譯產出: $EXECUTABLE"
+        exit 1
     fi
+    
+    # 建立 .app 目錄結構
+    local APP_DIR="${SCRIPT_DIR}/${APP_BUNDLE}"
+    rm -rf "$APP_DIR"
+    mkdir -p "$APP_DIR/Contents/MacOS"
+    mkdir -p "$APP_DIR/Contents/Resources"
+    
+    # 複製執行檔
+    cp "$EXECUTABLE" "$APP_DIR/Contents/MacOS/${APP_NAME}App"
+    
+    # 複製 Info.plist
+    cp "$SCRIPT_DIR/Sources/SmartIMEApp/Info.plist" "$APP_DIR/Contents/"
+    
+    # 修正 Info.plist 中的執行檔名稱
+    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${APP_NAME}App" "$APP_DIR/Contents/Info.plist" 2>/dev/null || true
+    
+    # 建立 PkgInfo
+    echo -n "APPL????" > "$APP_DIR/Contents/PkgInfo"
+    
+    print_success "${APP_BUNDLE} 建立完成: ${APP_DIR}"
+    echo ""
+    echo "  檔案大小: $(du -sh "$APP_DIR" | cut -f1)"
+    echo "  位置: ${APP_DIR}"
 }
 
-# 清理檔案
+# ═══════════════════════════════════════════════
+# 安裝到系統
+# ═══════════════════════════════════════════════
+install_app() {
+    local APP_DIR="${SCRIPT_DIR}/${APP_BUNDLE}"
+    
+    if [ ! -d "$APP_DIR" ]; then
+        print_warning "${APP_BUNDLE} 尚未建立，先執行建置..."
+        package_app
+    fi
+    
+    print_info "安裝到 ${INSTALL_DIR}/..."
+    
+    # 先停止舊版
+    if pgrep -f "${APP_NAME}App" > /dev/null 2>&1; then
+        print_info "停止舊版 ${APP_NAME}..."
+        killall "${APP_NAME}App" 2>/dev/null || true
+        sleep 1
+    fi
+    
+    # 複製到輸入法目錄
+    mkdir -p "$INSTALL_DIR"
+    rm -rf "${INSTALL_DIR}/${APP_BUNDLE}"
+    cp -R "$APP_DIR" "${INSTALL_DIR}/"
+    
+    print_success "安裝完成！"
+    echo ""
+    print_warning "請執行以下步驟啟用輸入法："
+    echo "  1. 系統設定 → 鍵盤 → 輸入方式 → 新增「SmartIME」"
+    echo "  2. 或登出再登入以重新載入輸入法"
+    echo ""
+    print_info "可以用以下指令手動重新載入："
+    echo "  killall imklaunchagent 2>/dev/null; sleep 1"
+}
+
+# ═══════════════════════════════════════════════
+# 清理
+# ═══════════════════════════════════════════════
 clean() {
-    print_info "清理輸出檔案..."
-    
-    rm -f *.o *.out a.out
-    rm -rf build/
-    
+    print_info "清理建置產出..."
+    cd "$SCRIPT_DIR"
+    swift package clean 2>/dev/null || true
+    rm -rf "${SCRIPT_DIR}/${APP_BUNDLE}"
+    rm -rf .build
     print_success "清理完成"
 }
 
-# Xcode 專案說明
-xcode_guide() {
-    print_info "創建 Xcode 專案步驟："
-    echo ""
-    echo "1. 打開 Xcode"
-    echo "2. 選擇 File > New > Project"
-    echo "3. 選擇 macOS > App 或 Input Method Extension"
-    echo "4. 輸入專案名稱: SmartIME"
-    echo "5. 將所有 .swift 檔案拖入專案"
-    echo "6. 配置 Info.plist (對於輸入法擴展)"
-    echo "7. 編譯和運行"
-    echo ""
-    echo "詳細說明請參考 USAGE_GUIDE.md"
-}
-
-# 快速參考
-quick_ref() {
-    print_info "快速參考："
-    echo ""
-    echo "核心類別："
-    echo "  • InputEngine      - 主輸入引擎"
-    echo "  • Trie             - 前綴樹"
-    echo "  • NgramModel       - N-gram 模型"
-    echo "  • BopomofoConverter - 注音轉換"
-    echo "  • LanguageDetector - 語言檢測"
-    echo "  • LanguageClassifier - ML 分類器"
-    echo ""
-    echo "主要演算法："
-    echo "  • Trie 樹          - O(m) 查找"
-    echo "  • N-gram           - 統計語言模型"
-    echo "  • Viterbi          - O(n×s²) 最佳路徑"
-    echo "  • 動態規劃         - 注音分段"
-    echo "  • 樸素貝葉斯       - 語言分類"
-    echo ""
-    echo "詳細資訊請查看 QUICK_REFERENCE.md"
-}
-
-# 主迴圈
-while true; do
-    show_menu
-    read -r choice
+# ═══════════════════════════════════════════════
+# 統計
+# ═══════════════════════════════════════════════
+stats() {
+    print_info "專案統計"
     echo ""
     
-    case $choice in
-        1)
-            print_info "運行主程式..."
-            swift main.swift
-            ;;
-        2)
-            count_code
-            ;;
-        3)
-            show_structure
-            ;;
-        4)
-            show_docs
-            ;;
-        5)
-            check_syntax
-            ;;
-        6)
-            clean
-            ;;
-        7)
-            xcode_guide
-            ;;
-        8)
-            quick_ref
-            ;;
-        0)
-            print_info "再見！"
-            exit 0
-            ;;
-        *)
-            print_error "無效的選項"
-            ;;
-    esac
+    local swift_files=$(find "$SCRIPT_DIR/Sources" "$SCRIPT_DIR/Tests" -name "*.swift" 2>/dev/null | wc -l | tr -d ' ')
+    local swift_lines=$(find "$SCRIPT_DIR/Sources" "$SCRIPT_DIR/Tests" -name "*.swift" -exec cat {} + 2>/dev/null | wc -l | tr -d ' ')
+    local md_files=$(find "$SCRIPT_DIR" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
     
+    echo "  Swift 檔案:  ${swift_files} 個"
+    echo "  Swift 行數:  ${swift_lines} 行"
+    echo "  文檔檔案:    ${md_files} 個"
     echo ""
-    echo "按 Enter 繼續..."
-    read -r
-    clear
-done
+    
+    echo "  模組列表:"
+    echo "    • SmartIMECore   (核心引擎)"
+    echo "    • SmartIMEApp    (macOS 輸入法)"
+    echo "    • SmartIMEDemo   (示範程式)"
+    echo "    • SmartIMECoreTests (單元測試)"
+}
+
+# ═══════════════════════════════════════════════
+# 主選單
+# ═══════════════════════════════════════════════
+show_menu() {
+    echo "請選擇操作："
+    echo ""
+    echo "  1) 建置全部 (Core + App)"
+    echo "  2) 執行測試"
+    echo "  3) 執行示範"
+    echo "  4) 封裝 .app bundle"
+    echo "  5) 安裝到系統"
+    echo "  6) 專案統計"
+    echo "  7) 清理"
+    echo "  0) 退出"
+    echo ""
+    echo -n "輸入選項 [0-7]: "
+}
+
+# ═══════════════════════════════════════════════
+# 入口
+# ═══════════════════════════════════════════════
+
+# 支援命令列參數直接執行
+case "${1:-}" in
+    build)
+        show_banner
+        check_env
+        build_core
+        build_app
+        ;;
+    test)
+        show_banner
+        check_env
+        run_tests
+        ;;
+    demo)
+        show_banner
+        check_env
+        run_demo
+        ;;
+    package)
+        show_banner
+        check_env
+        package_app
+        ;;
+    install)
+        show_banner
+        check_env
+        install_app
+        ;;
+    clean)
+        show_banner
+        clean
+        ;;
+    stats)
+        show_banner
+        stats
+        ;;
+    *)
+        show_banner
+        check_env
+        echo ""
+        
+        # 互動模式
+        while true; do
+            show_menu
+            read -r choice
+            echo ""
+            
+            case $choice in
+                1) build_core; build_app ;;
+                2) run_tests ;;
+                3) run_demo ;;
+                4) package_app ;;
+                5) install_app ;;
+                6) stats ;;
+                7) clean ;;
+                0) print_info "再見！"; exit 0 ;;
+                *) print_error "無效的選項" ;;
+            esac
+            
+            echo ""
+            echo "按 Enter 繼續..."
+            read -r
+            echo ""
+        done
+        ;;
+esac
