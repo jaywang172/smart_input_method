@@ -48,6 +48,23 @@ func main() {
     demo.runInteractiveDemo()
     demo.testDataStructurePerformance()
 
+    print("\n6. 進行密集基準測試 (Stress Test)...")
+    let testWords = ["hello", "world", "swift", "su3cl3", "rup wu0", "你好", "測試", "123"]
+    let testCount = 10000
+    let start = CFAbsoluteTimeGetCurrent()
+    for _ in 0..<testCount {
+        let word = testWords.randomElement()!
+        _ = engine.handleInput(word)
+        engine.clearInput()
+    }
+    let duration = (CFAbsoluteTimeGetCurrent() - start)
+    let avgLatency = (duration / Double(testCount)) * 1000 // in ms
+    let qps = Double(testCount) / duration
+    print("測試次數: \(testCount)")
+    print("總耗時: \(String(format: "%.4f", duration)) 秒")
+    print("平均生成延遲: \(String(format: "%.4f", avgLatency)) ms")
+    print("吞吐量 (QPS): \(String(format: "%.1f", qps)) 查詢/秒")
+
     print("✅ 演示完成！")
 }
 
